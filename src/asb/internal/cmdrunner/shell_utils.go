@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 
+	"github.com/mattn/go-isatty"
 	"github.com/rs/zerolog/log"
 )
 
@@ -43,30 +44,34 @@ func (cw *_CountingWriter) Write(p []byte) (int, error) {
 	return n, err
 }
 
-func runShellCommand(ctx context.Context, shellCmd []string) (*ShellResult, error) {
-	var stdoutWriter *_CountingWriter
-	var stdErrWriter *_CountingWriter
+// passTerminal hands a terminal to the command as is: behind a pipe, TUIs like
+// Claude Code see no terminal and fall back to non-interactive mode. Other output
+// is counted. Terminal output is not counted, so it is marked as present, which
+// keeps a failing command's own message from being followed by a generic error.
+func passTerminal(f *os.File, w *_CountingWriter) io.Writer {
+	if isatty.IsTerminal(f.Fd()) {
+		w.count = 1
+		return f
+	}
+	return w
+}
 
+func runShellCommand(ctx context.Context, shellCmd []string) (*ShellResult, error) {
 	// Execute the shell command
 	// Note: This is a blocking call
 	//nolint:gosec  // User is deliberately executing a command
 	cmdCtx := exec.CommandContext(ctx, shellCmd[0], shellCmd[1:]...)
-	if isInteractiveTerminal() {
-		log.Debug().Msg("Running shell command in interactive mode")
-		stdoutWriter = newCountingWriter(os.Stdout)
-		stdErrWriter = newCountingWriter(os.Stderr)
-		cmdCtx.Stdin = os.Stdin
-		cmdCtx.Stdout = stdoutWriter
-		cmdCtx.Stderr = stdErrWriter
-	}
+	// Pass stdio through also when not on a terminal, so piped use (e.g. claude -p) keeps its output
+	stdoutWriter := newCountingWriter(os.Stdout)
+	stdErrWriter := newCountingWriter(os.Stderr)
+	cmdCtx.Stdin = os.Stdin
+	cmdCtx.Stdout = passTerminal(os.Stdout, stdoutWriter)
+	cmdCtx.Stderr = passTerminal(os.Stderr, stdErrWriter)
 	// cmdCtx.Stdout = log.Logger.Level(zerolog.InfoLevel).With().Logger()
 	// cmdCtx.Stderr = log.Logger.Level(zerolog.ErrorLevel).With().Strs("shellCmd", shellCmd).Logger()
 	err := cmdCtx.Run()
 
-	var shellResult *ShellResult
-	if stdoutWriter != nil && stdErrWriter != nil {
-		shellResult = &ShellResult{stdoutBytes: stdoutWriter.count, stderrBytes: stdErrWriter.count}
-	}
+	shellResult := &ShellResult{stdoutBytes: stdoutWriter.count, stderrBytes: stdErrWriter.count}
 
 	// Check for other errors and return them as-is
 	if err != nil {

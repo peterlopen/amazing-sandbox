@@ -35,6 +35,9 @@ func getRootCmd() *cobra.Command {
 	_ = rootCmd.PersistentFlags().StringArrayP("mount-ro", "m", nil, "Mount a directory as read-only inside the sandbox (can be specified multiple times)")
 	_ = rootCmd.PersistentFlags().StringArrayP("mount-rw", "", nil, "Mount a directory as read-write inside the sandbox (can be specified multiple times)")
 	_ = rootCmd.PersistentFlags().StringP("mode", "", "auto", "Sandbox mode to use (auto, podman, docker, or native; auto prefers docker)")
+	_ = rootCmd.PersistentFlags().StringArrayP("deny-write", "", nil, "Never allow writes to this path, even inside mounted directories (native macOS only, can be specified multiple times)")
+	_ = rootCmd.PersistentFlags().StringArrayP("deny-write-regex", "", nil, "Never allow writes to absolute paths matching this sandbox-exec regex (native macOS only, can be specified multiple times)")
+	_ = rootCmd.PersistentFlags().StringArrayP("deny-read", "", nil, "Never allow reads of this path, even inside mounted directories (native macOS only, can be specified multiple times)")
 
 	rootCmd.AddCommand(versionCmd())
 

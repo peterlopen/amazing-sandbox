@@ -3,6 +3,7 @@ package cmdrunner
 import (
 	"os"
 	"path"
+	"path/filepath"
 	"slices"
 	"strings"
 
@@ -71,6 +72,12 @@ type Config struct {
 
 	extraMountRODirs []string // Additional directories to mount as read-only inside the container
 	extraMountRWDirs []string // Additional directories to mount as read-write inside the container
+
+	// Native macOS only. Applied after every allow rule, so they also cover
+	// paths inside the working directory, the agent config dirs and --mount-rw.
+	denyWritePaths   []string // Paths that may never be written
+	denyWriteRegexes []string // sandbox-exec regexes on the absolute path that may never be written
+	denyReadPaths    []string // Paths that may never be read
 
 	runAsNonRoot bool        // Whether to run the container as non-root user
 	networkType  NetworkType // Network type for the container
@@ -155,6 +162,39 @@ func SetExtraMountRWDirs(dirs []string) Option {
 	return func(c *Config) {
 		c.extraMountRWDirs = append([]string(nil), dirs...)
 	}
+}
+
+func SetDenyWritePaths(paths []string) Option {
+	return func(c *Config) {
+		c.denyWritePaths = append([]string(nil), paths...)
+	}
+}
+
+func SetDenyWriteRegexes(regexes []string) Option {
+	return func(c *Config) {
+		c.denyWriteRegexes = append([]string(nil), regexes...)
+	}
+}
+
+func SetDenyReadPaths(paths []string) Option {
+	return func(c *Config) {
+		c.denyReadPaths = append([]string(nil), paths...)
+	}
+}
+
+// getDenyPaths returns each path as absolute and, when it exists, also
+// symlink-resolved, since sandbox-exec matches real paths. Paths that do not
+// exist yet are kept, so the sandbox cannot create them either.
+func (c Config) getDenyPaths(paths []string) []string {
+	result := make([]string, 0, len(paths))
+	for _, p := range paths {
+		absPath := getAbsolutePath(c.workingDir, p)
+		result = append(result, absPath)
+		if realPath, err := filepath.EvalSymlinks(absPath); err == nil && realPath != absPath {
+			result = append(result, realPath)
+		}
+	}
+	return result
 }
 
 func SetExecMode(execMode ExecMode) Option {

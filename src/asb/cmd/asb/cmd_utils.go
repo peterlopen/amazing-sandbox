@@ -195,6 +195,12 @@ func getCmdConfig(cmd *cobra.Command, args []string) []cmdrunner.Option {
 		options = append(options, cmdrunner.SetExtraMountRWDirs(mountRWDirs))
 	}
 
+	options = append(options,
+		cmdrunner.SetDenyWritePaths(getStringArrayFlagOrFail(cmd, "deny-write")),
+		cmdrunner.SetDenyWriteRegexes(getStringArrayFlagOrFail(cmd, "deny-write-regex")),
+		cmdrunner.SetDenyReadPaths(getStringArrayFlagOrFail(cmd, "deny-read")),
+	)
+
 	options = append(options, cmdrunner.SetExecMode(cmdrunner.ExecMode(mode)))
 	return options
 }

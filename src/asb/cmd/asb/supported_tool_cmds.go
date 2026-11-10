@@ -180,5 +180,8 @@ func execCmd() *cobra.Command {
 		Use:   "exec",
 		Short: "Run an arbitrary host binary inside the sandbox (requires --mode=native)",
 	}
+	// Stop flag parsing at the binary name, so the binary's own flags
+	// (e.g. claude -r, -d) are not taken as asb's -r, -d.
+	cmd.Flags().SetInterspersed(false)
 	return createCmd(cmd, cmdrunner.CmdTypeExec)
 }

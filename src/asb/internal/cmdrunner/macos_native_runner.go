@@ -7,6 +7,8 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
+	"regexp"
 	"strings"
 
 	"github.com/rs/zerolog/log"
@@ -25,6 +27,8 @@ func runCmdInNative(ctx context.Context, config Config) (*ShellResult, error) {
 		"(version 1)",
 		"(deny default)",
 		"(allow sysctl-read)",
+		// /usr/libexec/java_home (behind /usr/bin/java) sets its preferred CPU type
+		`(allow sysctl-write (sysctl-name "kern.grade_cputype"))`,
 		`(allow file-read* (literal "/"))`,
 		"(allow file-read-metadata)",
 		"(deny file-write*)",
@@ -180,10 +184,10 @@ func runCmdInNative(ctx context.Context, config Config) (*ShellResult, error) {
 			(local-name "com.apple.tsm.portname"))`,
 		// VS code
 		`(allow mach-register (global-name-regex #"^com\.microsoft\.VSCode\.MachPortRendezvousServer\..*"))`,
-		`;; Allow querying terminal window size (TIOCGWINSZ) on pseudo-terminals
-		 (allow file-ioctl
-		 (literal "/dev/ttys000")
- 		 (ioctl-command (_IO "t" 20)))`,
+		// Terminal control (raw mode, window size) on the terminal, whatever its number,
+		// so TUIs like Claude Code work. TIOCSTI stays denied, see the end of the profile.
+		`(allow file-write-data (literal "/dev/tty") (regex #"^/dev/ttys[0-9]+$"))`,
+		`(allow file-ioctl (regex #"^/dev/(tty|ttys[0-9]+)$"))`,
 		`(allow system-fsctl (fsctl-command (_IO "h" 47)))`,
 		// authorization-right-obtain com.apple.ServiceManagement.daemons.modify
 		`(allow mach-lookup (global-name "com.apple.ServiceManagement.daemons.modify"))`,
@@ -269,6 +273,15 @@ func runCmdInNative(ctx context.Context, config Config) (*ShellResult, error) {
 		}
 		sandboxConfig = append(sandboxConfig, mountStr...)
 	}
+	if len(filesToMount) > 0 {
+		// Claude Code saves ~/.claude.json through ~/.claude.json.lock and ~/.claude.json.tmp.*
+		homeDir, err := os.UserHomeDir()
+		if err != nil {
+			return nil, fmt.Errorf("failed to get user home directory: %w", err)
+		}
+		sandboxConfig = append(sandboxConfig, fmt.Sprintf(`(allow file-read* file-write* (regex #"^%s\.(lock(/.*)?|tmp\.[^/]+)$"))`,
+			regexp.QuoteMeta(filepath.Join(homeDir, ".claude.json"))))
+	}
 
 	for _, path := range roPathsToMount {
 		sandboxConfig = append(sandboxConfig, fmt.Sprintf(`(allow file-read* (subpath "%s"))`, path))
@@ -293,6 +306,20 @@ func runCmdInNative(ctx context.Context, config Config) (*ShellResult, error) {
 		}
 		cmdArgs = append([]string{absPath}, cmdArgs[1:]...)
 	}
+
+	// sandbox-exec applies the last matching rule, so these deny rules go last
+	// and win over every allow rule above.
+	for _, path := range config.getDenyPaths(config.denyReadPaths) {
+		sandboxConfig = append(sandboxConfig, fmt.Sprintf(`(deny file-read* (subpath "%s"))`, path))
+	}
+	for _, path := range config.getDenyPaths(config.denyWritePaths) {
+		sandboxConfig = append(sandboxConfig, fmt.Sprintf(`(deny file-write* (subpath "%s"))`, path))
+	}
+	for _, regex := range config.denyWriteRegexes {
+		sandboxConfig = append(sandboxConfig, fmt.Sprintf(`(deny file-write* (regex #"%s"))`, regex))
+	}
+	// TIOCSTI would type commands into the terminal, which the shell outside runs after the sandbox exits
+	sandboxConfig = append(sandboxConfig, `(deny file-ioctl (ioctl-command (_IO "t" 114)))`)
 
 	if len(cmdArgs) == 0 {
 		return nil, errors.New("no command to run in native mode")
