@@ -1,0 +1,63 @@
+#!/bin/bash
+# Starts Claude Code inside amazing-sandbox (asb native mode = macOS sandbox-exec), built
+# from this fork. See claude-native/README.md for what is allowed and why.
+#
+# Inside, Claude can read what a JVM / Node / kubectl / Docker workflow needs and write only:
+#   the workspace (minus .git/hooks, .git/config and .idea), ~/.m2/repository, ~/.kube/cache,
+#   ~/.claude and ~/.claude.json (minus settings.json), the login keychain, temp dirs and
+#   the tool caches asb allows. Network stays open (web, ssh via an agent, localhost, Docker).
+
+WORKSPACE="${CLAUDE_SB_WORKSPACE:-$HOME/projects}"
+REAL_CLAUDE="$HOME/.local/bin/claude"
+ASB="$HOME/.local/bin/asb"
+
+# The sandbox can't write the Claude install, so updates run outside it.
+case "${1:-}" in
+  update | install) exec "$REAL_CLAUDE" "$@" ;;
+esac
+
+# Outside the workspace the sandbox can't read the start directory.
+case "$PWD/" in
+  "$WORKSPACE/"*) ;;
+  *) echo "claude-sb: start it inside $WORKSPACE (the sandbox can't read $PWD)" >&2; exit 1 ;;
+esac
+
+args=(--mode=native --directory "$WORKSPACE")
+
+# Read-only: tool configuration (only paths that exist, so asb doesn't warn about the others)
+for p in .m2 .mavenrc .kube .gitconfig .ssh/config .ssh/known_hosts .docker .testcontainers.properties; do
+  [ -e "$HOME/$p" ] && args+=(--mount-ro "$HOME/$p")
+done
+# Public keys only, for IdentityFile entries that select a key in an SSH agent
+for p in "$HOME"/.ssh/*.pub; do
+  [ -e "$p" ] && args+=(--mount-ro "$p")
+done
+args+=(--mount-ro /usr --mount-ro /sbin)
+
+# Writable: caches and state the tools update
+for p in .m2/repository .kube/cache .docker/buildx "Library/Application Support/rtk"; do
+  [ -e "$HOME/$p" ] && args+=(--mount-rw "$HOME/$p")
+done
+
+# kubelogin and Claude save tokens to the login keychain, and the Keychain service checks the
+# caller's sandbox for write access to this folder. The data-protection keychain (the UUID
+# folder) and metadata.keychain-db stay read-only.
+args+=(--mount-rw "$HOME/Library/Keychains")
+for p in "$HOME"/Library/Keychains/*/ "$HOME/Library/Keychains/metadata.keychain-db"; do
+  [ -e "$p" ] && args+=(--deny-write "${p%/}")
+done
+
+# Never writable, even inside the paths above: things that run outside the sandbox later
+args+=(
+  --deny-write "$HOME/.local/bin"            # first in PATH
+  --deny-write "$HOME/.local/share/claude"   # Claude's own binaries
+  --deny-write "$HOME/.config"               # git, editor and shell configuration
+  --deny-write "$HOME/.claude/settings.json" # hooks and permissions
+  # git hooks and config run on your next git command, .idea run configurations in the IDE
+  --deny-write-regex "^$WORKSPACE/(.+/)?(\.git/(.+/)?(hooks(/|\$)|config(\.worktree)?\$)|\.idea(/|\$))"
+)
+
+export DISABLE_AUTOUPDATER=1
+export ASB_SANDBOX=native # lets Claude (and you) see it runs sandboxed
+
+exec "$ASB" "${args[@]}" exec "$REAL_CLAUDE" "$@"
